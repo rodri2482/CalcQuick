@@ -40,6 +40,22 @@ gradle :app:testDebugUnitTest       # unit tests (Robolectric)
 > `gradle/actions/setup-gradle` with Gradle 9.3.1 is used because the wrapper
 > JAR is not committed.
 
+## Releasing / Deploying
+
+- **Debug APK (fastest, zero setup):** every CI run on GitHub Actions uploads a
+  signed, installable `CalcQuick-debug-apk` artifact — download it from the run's
+  Artifacts section, copy it to a phone, and install (allow "Install unknown apps" for
+  the file manager).
+- **Signed release APK (sideload-ready):** add the repository secrets
+  `RELEASE_KEYSTORE_BASE64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`
+  (see `release.yml` header for how to create the keystore), then run the
+  **Release APK** workflow manually or push a `v*` tag. The signed APK is
+  uploaded as both an artifact and a GitHub Release asset.
+- **Google Play:** click the developer fee ($25 one-time), create the app entry,
+  and upload an AAB built with `gradle :app:bundleRelease` using the same
+  environment variables. Bump `versionCode` before every upload; a release AAB
+  is required at store submission. Default setting: minSdk 24, targetSdk 36.
+
 ## Tests
 
 `app/src/test/java/com/example/MathExpressionEvaluatorTest.kt` covers the
