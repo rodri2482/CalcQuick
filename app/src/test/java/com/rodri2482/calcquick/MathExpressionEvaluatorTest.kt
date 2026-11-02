@@ -96,6 +96,14 @@ class MathExpressionEvaluatorTest {
         assertEquals("5", MathExpressionEvaluator.evaluate("10*50%"))
 
     @Test
+    fun percentOfRunningTotalMatchesConventionalCalculators() {
+        // Windows/Google calculator convention: the percent applies to the
+        // whole expression so far
+        assertEquals("440", MathExpressionEvaluator.evaluate("200*2+10%"))
+        assertEquals("93.6", MathExpressionEvaluator.evaluate("(2+50)*2-10%"))
+    }
+
+    @Test
     fun moduloOperator() {
         // Binary % was previously unreachable (postfix percent consumed it)
         assertEquals("1", MathExpressionEvaluator.evaluate("10%3"))

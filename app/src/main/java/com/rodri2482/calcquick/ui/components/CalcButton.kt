@@ -1,5 +1,7 @@
 ﻿package com.rodri2482.calcquick.ui.components
 
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -15,8 +17,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +50,13 @@ enum class CalcButtonType {
     CLEAR
 }
 
+/**
+ * App-wide "key click" sound switch. Provided once in MainActivity from
+ * CalculatorUiState.soundEnabled so every CalcButton in every pad reacts to
+ * the Settings toggle without threading the flag through all call sites.
+ */
+val LocalFeedbackSound = staticCompositionLocalOf { false }
+
 @Composable
 fun CalcButton(
     text: String,
@@ -60,6 +71,20 @@ fun CalcButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val view = LocalView.current
+    val soundEnabled = LocalFeedbackSound.current
+
+    // Short UI key-click, no audio assets needed. Repeated startTone() calls
+    // reuse the generator; released when the button leaves composition.
+    val toneGenerator = remember {
+        try {
+            ToneGenerator(AudioManager.STREAM_SYSTEM, 55)
+        } catch (_: RuntimeException) {
+            null // some devices fail when the stream is muted
+        }
+    }
+    DisposableEffect(toneGenerator) {
+        onDispose { toneGenerator?.release() }
+    }
 
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.92f else 1.0f,
@@ -102,6 +127,9 @@ fun CalcButton(
                 onClick = {
                     if (hapticEnabled) {
                         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    }
+                    if (soundEnabled) {
+                        toneGenerator?.startTone(ToneGenerator.TONE_PROP_KEY, 40)
                     }
                     onClick()
                 }

@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
             var showSettingsDialog by remember { mutableStateOf(false) }
 
             ApexCalcTheme(themeStyle = uiState.themeStyle) {
+                CompositionLocalProvider(LocalFeedbackSound provides uiState.soundEnabled) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -204,6 +205,7 @@ class MainActivity : ComponentActivity() {
                             onPrecisionSelected = { viewModel.setDecimalPrecision(it) },
                             onDismiss = { showSettingsDialog = false }
                         )
+                    }
                     }
                 }
             }

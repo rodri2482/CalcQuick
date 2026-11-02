@@ -248,19 +248,26 @@ object MathExpressionEvaluator {
         /**
          * Consumes '%' when it means "divide by 100" (i.e. nothing meaning
          * "value" follows); returns false when '%' starts a modulo operation.
+         * Consuming is required so parseTerm's modulo branch doesn't see the
+         * same '%' again.
          */
         private fun eatPercentAsPostfix(): Boolean {
             while (ch == ' '.code) nextChar()
             if (ch != '%'.code) return false
             var peek = pos + 1
             while (peek < str.length && str[peek] == ' ') peek++
-            if (peek >= str.length) return true
+            if (peek >= str.length) {
+                nextChar()
+                return true
+            }
             val next = str[peek].code
-            return !(next in '0'.code..'9'.code ||
+            val isPostfix = !(next in '0'.code..'9'.code ||
                     next in 'a'.code..'z'.code ||
                     next in 'A'.code..'Z'.code ||
                     next == '('.code ||
                     next == '.'.code)
+            if (isPostfix) nextChar()
+            return isPostfix
         }
 
         private fun parsePrimary(): Double {
