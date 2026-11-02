@@ -1,0 +1,483 @@
+package com.example.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.evaluator.MathExpressionEvaluator
+import com.example.model.CalcMode
+import com.example.model.CalculationHistoryItem
+import com.example.model.UnitCategory
+import com.example.model.UnitConverterData
+import com.example.model.UnitItem
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.math.BigDecimal
+import java.math.RoundingMode
+import kotlin.math.pow
+
+enum class ThemeStyle(val displayName: String) {
+    NEON_CYBER("Neon Cyber (Dark)"),
+    OLED_DARK("OLED Black"),
+    CLEAN_LIGHT("Clean Light"),
+    MIDNIGHT_BLUE("Midnight Blue")
+}
+
+data class CalculatorUiState(
+    val activeMode: CalcMode = CalcMode.STANDARD,
+    val expression: String = "",
+    val cursorPosition: Int = 0,
+    val livePreview: String? = null,
+    val isDegreeMode: Boolean = true,
+    val memoryValue: Double = 0.0,
+    val hasMemory: Boolean = false,
+    val decimalPrecision: Int = 6,
+    val errorMessage: String? = null,
+    
+    // Converter state
+    val converterCategory: UnitCategory = UnitCategory.LENGTH,
+    val converterInput: String = "1",
+    val fromUnit: UnitItem = UnitConverterData.getUnitsForCategory(UnitCategory.LENGTH)[0],
+    val toUnit: UnitItem = UnitConverterData.getUnitsForCategory(UnitCategory.LENGTH)[2], // cm
+    val converterResult: String = "100",
+
+    // Loan state
+    val loanPrincipal: String = "250000",
+    val loanInterestRate: String = "6.5",
+    val loanTermYears: String = "30",
+    val loanMonthlyPayment: String = "1,580.17",
+    val loanTotalPayment: String = "568,861.20",
+    val loanTotalInterest: String = "318,861.20",
+
+    // Tip & Split state
+    val tipBillAmount: String = "100.00",
+    val tipPercentage: Int = 15,
+    val tipSplitCount: Int = 2,
+    val tipAmount: String = "15.00",
+    val tipTotalAmount: String = "115.00",
+    val tipPerPersonAmount: String = "57.50",
+
+    // Discount state
+    val discountOriginalPrice: String = "120.00",
+    val discountPercent: String = "20",
+    val discountTaxPercent: String = "8",
+    val discountFinalPrice: String = "103.68",
+    val discountSavedAmount: String = "24.00",
+
+    // BMI state
+    val bmiIsMetric: Boolean = true,
+    val bmiHeight: String = "175",
+    val bmiWeight: String = "70",
+    val bmiScore: Double = 22.86,
+    val bmiCategory: String = "Normal Weight",
+
+    // History state
+    val history: List<CalculationHistoryItem> = emptyList(),
+
+    // Preferences
+    val themeStyle: ThemeStyle = ThemeStyle.NEON_CYBER,
+    val soundEnabled: Boolean = true,
+    val hapticEnabled: Boolean = true
+)
+
+class CalculatorViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(CalculatorUiState())
+    val uiState: StateFlow<CalculatorUiState> = _uiState.asStateFlow()
+
+    init {
+        updateLivePreview()
+        recalculateConverter()
+        recalculateLoan()
+        recalculateTip()
+        recalculateDiscount()
+        recalculateBmi()
+    }
+
+    fun setMode(mode: CalcMode) {
+        _uiState.update { it.copy(activeMode = mode, errorMessage = null) }
+    }
+
+    fun setThemeStyle(theme: ThemeStyle) {
+        _uiState.update { it.copy(themeStyle = theme) }
+    }
+
+    fun toggleSound() {
+        _uiState.update { it.copy(soundEnabled = !it.soundEnabled) }
+    }
+
+    fun toggleHaptic() {
+        _uiState.update { it.copy(hapticEnabled = !it.hapticEnabled) }
+    }
+
+    // --- Calculator Engine Actions ---
+
+    fun onKeyInput(key: String) {
+        _uiState.update { state ->
+            val expr = state.expression
+            val pos = state.cursorPosition.coerceIn(0, expr.length)
+            val newExpr = StringBuilder(expr).insert(pos, key).toString()
+            state.copy(
+                expression = newExpr,
+                cursorPosition = pos + key.length,
+                errorMessage = null
+            )
+        }
+        updateLivePreview()
+    }
+
+    fun onFunctionInput(funcName: String) {
+        val snippet = "$funcName("
+        onKeyInput(snippet)
+    }
+
+    fun onBackspace() {
+        _uiState.update { state ->
+            val expr = state.expression
+            if (expr.isNotEmpty() && state.cursorPosition > 0) {
+                val pos = state.cursorPosition
+                val newExpr = StringBuilder(expr).deleteAt(pos - 1).toString()
+                state.copy(
+                    expression = newExpr,
+                    cursorPosition = (pos - 1).coerceAtLeast(0),
+                    errorMessage = null
+                )
+            } else state
+        }
+        updateLivePreview()
+    }
+
+    fun onClearAll() {
+        _uiState.update {
+            it.copy(
+                expression = "",
+                cursorPosition = 0,
+                livePreview = null,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun toggleDegreeRadian() {
+        _uiState.update { it.copy(isDegreeMode = !it.isDegreeMode) }
+        updateLivePreview()
+    }
+
+    fun togglePlusMinus() {
+        _uiState.update { state ->
+            val expr = state.expression
+            if (expr.startsWith("-")) {
+                state.copy(expression = expr.substring(1), cursorPosition = (state.cursorPosition - 1).coerceAtLeast(0))
+            } else if (expr.isNotEmpty()) {
+                state.copy(expression = "-$expr", cursorPosition = state.cursorPosition + 1)
+            } else {
+                state.copy(expression = "-", cursorPosition = 1)
+            }
+        }
+        updateLivePreview()
+    }
+
+    fun onEqualsPressed() {
+        val currentState = _uiState.value
+        val expr = currentState.expression.trim()
+        if (expr.isEmpty()) return
+
+        try {
+            val result = MathExpressionEvaluator.evaluate(
+                expression = expr,
+                isDegreeMode = currentState.isDegreeMode,
+                decimalPrecision = currentState.decimalPrecision
+            )
+
+            // Save to history
+            val newHistoryItem = CalculationHistoryItem(
+                modeName = currentState.activeMode.title,
+                expression = expr,
+                result = result
+            )
+
+            _uiState.update { state ->
+                state.copy(
+                    expression = result,
+                    cursorPosition = result.length,
+                    livePreview = null,
+                    errorMessage = null,
+                    history = listOf(newHistoryItem) + state.history
+                )
+            }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorMessage = e.message ?: "Evaluation Error") }
+        }
+    }
+
+    private fun updateLivePreview() {
+        val currentState = _uiState.value
+        val preview = MathExpressionEvaluator.tryEvaluatePreview(
+            expression = currentState.expression,
+            isDegreeMode = currentState.isDegreeMode,
+            decimalPrecision = currentState.decimalPrecision
+        )
+        _uiState.update { it.copy(livePreview = preview) }
+    }
+
+    // --- Memory Functions ---
+
+    fun memoryClear() {
+        _uiState.update { it.copy(memoryValue = 0.0, hasMemory = false) }
+    }
+
+    fun memoryRecall() {
+        val mem = _uiState.value.memoryValue
+        val formattedMem = if (mem % 1.0 == 0.0) String.format("%.0f", mem) else mem.toString()
+        onKeyInput(formattedMem)
+    }
+
+    fun memoryAdd() {
+        val currentState = _uiState.value
+        val valueToAdd = currentState.livePreview?.toDoubleOrNull()
+            ?: currentState.expression.toDoubleOrNull()
+            ?: return
+        val newMem = currentState.memoryValue + valueToAdd
+        _uiState.update { it.copy(memoryValue = newMem, hasMemory = true) }
+    }
+
+    fun memorySubtract() {
+        val currentState = _uiState.value
+        val valueToSub = currentState.livePreview?.toDoubleOrNull()
+            ?: currentState.expression.toDoubleOrNull()
+            ?: return
+        val newMem = currentState.memoryValue - valueToSub
+        _uiState.update { it.copy(memoryValue = newMem, hasMemory = true) }
+    }
+
+    // --- Converter Actions ---
+
+    fun onConverterCategorySelected(category: UnitCategory) {
+        val units = UnitConverterData.getUnitsForCategory(category)
+        _uiState.update {
+            it.copy(
+                converterCategory = category,
+                fromUnit = units[0],
+                toUnit = if (units.size > 1) units[1] else units[0]
+            )
+        }
+        recalculateConverter()
+    }
+
+    fun onConverterInputChanged(input: String) {
+        _uiState.update { it.copy(converterInput = input) }
+        recalculateConverter()
+    }
+
+    fun onConverterFromUnitChanged(unit: UnitItem) {
+        _uiState.update { it.copy(fromUnit = unit) }
+        recalculateConverter()
+    }
+
+    fun onConverterToUnitChanged(unit: UnitItem) {
+        _uiState.update { it.copy(toUnit = unit) }
+        recalculateConverter()
+    }
+
+    fun swapConverterUnits() {
+        _uiState.update {
+            it.copy(fromUnit = it.toUnit, toUnit = it.fromUnit)
+        }
+        recalculateConverter()
+    }
+
+    private fun recalculateConverter() {
+        val state = _uiState.value
+        val valDouble = state.converterInput.toDoubleOrNull() ?: 0.0
+        val res = UnitConverterData.convert(valDouble, state.converterCategory, state.fromUnit, state.toUnit)
+        
+        val formattedRes = if (res % 1.0 == 0.0 && Math.abs(res) < 1e9) {
+            String.format("%.0f", res)
+        } else {
+            BigDecimal(res).setScale(state.decimalPrecision, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+        }
+
+        _uiState.update { it.copy(converterResult = formattedRes) }
+    }
+
+    // --- Loan Calculator Actions ---
+
+    fun onLoanInputChanged(principal: String? = null, rate: String? = null, years: String? = null) {
+        _uiState.update {
+            it.copy(
+                loanPrincipal = principal ?: it.loanPrincipal,
+                loanInterestRate = rate ?: it.loanInterestRate,
+                loanTermYears = years ?: it.loanTermYears
+            )
+        }
+        recalculateLoan()
+    }
+
+    private fun recalculateLoan() {
+        val state = _uiState.value
+        val p = state.loanPrincipal.toDoubleOrNull() ?: 0.0
+        val annualRate = state.loanInterestRate.toDoubleOrNull() ?: 0.0
+        val years = state.loanTermYears.toDoubleOrNull() ?: 0.0
+
+        if (p <= 0 || annualRate <= 0 || years <= 0) {
+            _uiState.update {
+                it.copy(
+                    loanMonthlyPayment = "0.00",
+                    loanTotalPayment = "0.00",
+                    loanTotalInterest = "0.00"
+                )
+            }
+            return
+        }
+
+        val monthlyRate = annualRate / 100.0 / 12.0
+        val totalMonths = (years * 12).toInt()
+        val monthlyPayment = (p * monthlyRate * (1 + monthlyRate).pow(totalMonths)) /
+                ((1 + monthlyRate).pow(totalMonths) - 1)
+
+        val totalPayment = monthlyPayment * totalMonths
+        val totalInterest = totalPayment - p
+
+        _uiState.update {
+            it.copy(
+                loanMonthlyPayment = String.format("%,.2f", monthlyPayment),
+                loanTotalPayment = String.format("%,.2f", totalPayment),
+                loanTotalInterest = String.format("%,.2f", totalInterest)
+            )
+        }
+    }
+
+    // --- Tip & Split Actions ---
+
+    fun onTipInputChanged(bill: String? = null, tipPct: Int? = null, split: Int? = null) {
+        _uiState.update {
+            it.copy(
+                tipBillAmount = bill ?: it.tipBillAmount,
+                tipPercentage = tipPct ?: it.tipPercentage,
+                tipSplitCount = (split ?: it.tipSplitCount).coerceAtLeast(1)
+            )
+        }
+        recalculateTip()
+    }
+
+    private fun recalculateTip() {
+        val state = _uiState.value
+        val bill = state.tipBillAmount.toDoubleOrNull() ?: 0.0
+        val tipPct = state.tipPercentage
+        val split = state.tipSplitCount
+
+        val tipAmt = bill * (tipPct / 100.0)
+        val total = bill + tipAmt
+        val perPerson = total / split
+
+        _uiState.update {
+            it.copy(
+                tipAmount = String.format("%.2f", tipAmt),
+                tipTotalAmount = String.format("%.2f", total),
+                tipPerPersonAmount = String.format("%.2f", perPerson)
+            )
+        }
+    }
+
+    // --- Discount & Tax Actions ---
+
+    fun onDiscountInputChanged(price: String? = null, discount: String? = null, tax: String? = null) {
+        _uiState.update {
+            it.copy(
+                discountOriginalPrice = price ?: it.discountOriginalPrice,
+                discountPercent = discount ?: it.discountPercent,
+                discountTaxPercent = tax ?: it.discountTaxPercent
+            )
+        }
+        recalculateDiscount()
+    }
+
+    private fun recalculateDiscount() {
+        val state = _uiState.value
+        val orig = state.discountOriginalPrice.toDoubleOrNull() ?: 0.0
+        val discPct = state.discountPercent.toDoubleOrNull() ?: 0.0
+        val taxPct = state.discountTaxPercent.toDoubleOrNull() ?: 0.0
+
+        val saved = orig * (discPct / 100.0)
+        val discountedPrice = orig - saved
+        val taxAmt = discountedPrice * (taxPct / 100.0)
+        val finalPrice = discountedPrice + taxAmt
+
+        _uiState.update {
+            it.copy(
+                discountFinalPrice = String.format("%.2f", finalPrice),
+                discountSavedAmount = String.format("%.2f", saved)
+            )
+        }
+    }
+
+    // --- BMI Calculator Actions ---
+
+    fun onBmiInputChanged(height: String? = null, weight: String? = null, isMetric: Boolean? = null) {
+        _uiState.update {
+            it.copy(
+                bmiHeight = height ?: it.bmiHeight,
+                bmiWeight = weight ?: it.bmiWeight,
+                bmiIsMetric = isMetric ?: it.bmiIsMetric
+            )
+        }
+        recalculateBmi()
+    }
+
+    private fun recalculateBmi() {
+        val state = _uiState.value
+        val h = state.bmiHeight.toDoubleOrNull() ?: 0.0
+        val w = state.bmiWeight.toDoubleOrNull() ?: 0.0
+
+        if (h <= 0 || w <= 0) return
+
+        val bmi = if (state.bmiIsMetric) {
+            val meters = h / 100.0
+            w / (meters * meters)
+        } else {
+            703.0 * w / (h * h)
+        }
+
+        val category = when {
+            bmi < 18.5 -> "Underweight"
+            bmi < 25.0 -> "Normal Weight"
+            bmi < 30.0 -> "Overweight"
+            else -> "Obese"
+        }
+
+        _uiState.update {
+            it.copy(
+                bmiScore = BigDecimal(bmi).setScale(2, RoundingMode.HALF_UP).toDouble(),
+                bmiCategory = category
+            )
+        }
+    }
+
+    // --- History Actions ---
+
+    fun recallHistoryItem(item: CalculationHistoryItem) {
+        _uiState.update { state ->
+            state.copy(
+                activeMode = CalcMode.STANDARD,
+                expression = item.expression,
+                cursorPosition = item.expression.length,
+                errorMessage = null
+            )
+        }
+        updateLivePreview()
+    }
+
+    fun toggleFavoriteHistory(itemId: String) {
+        _uiState.update { state ->
+            val updated = state.history.map {
+                if (it.id == itemId) it.copy(isFavorite = !it.isFavorite) else it
+            }
+            state.copy(history = updated)
+        }
+    }
+
+    fun clearHistory() {
+        _uiState.update { it.copy(history = emptyList()) }
+    }
+}

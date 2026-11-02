@@ -1,0 +1,6 @@
+{
+  "name": "Apex Calc",
+  "description": "Powerful scientific calculator, unit converter, tip, loan, discount & BMI calculator with calculation history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
