@@ -6,7 +6,7 @@ A fast, multi-mode calculator for Android built with **Jetpack Compose** and **M
 
 ## Features
 
-- **Standard & Scientific modes** — live expression preview as you type, DEG/RAD toggle, memory keys, factorial, powers, percent, implicit multiplication (`2(3)`, `2PI`)
+- **Standard & Scientific modes** — live expression preview as you type, DEG/RAD toggle, memory keys, factorial, powers, calculator-convention percent (`100-50%` → `50`), modulo (`10%3`), implicit multiplication (`2(3)`, `2PI`)
 - **Unit Converter** — length, weight, temperature, area, volume, speed, time, data storage, energy
 - **Loan calculator** — monthly payment, total payment, total interest
 - **Tip & Split** — bill, tip %, per-person totals
@@ -23,6 +23,7 @@ A fast, multi-mode calculator for Android built with **Jetpack Compose** and **M
 | UI         | Jetpack Compose + Material 3                  |
 | State      | MVVM (`StateFlow` + `AndroidViewModel`)       |
 | Evaluation | Custom zero-dependency recursive-descent parser (no `eval`, no code-execution surface) |
+| Package    | `com.rodri2482.calcquick` (Play-Store-safe namespace) |
 | Storage    | Room (calculation history) · SharedPreferences (settings) |
 | Build      | Kotlin 2.2, AGP 9, Gradle 9, KSP, R8-minified release |
 
