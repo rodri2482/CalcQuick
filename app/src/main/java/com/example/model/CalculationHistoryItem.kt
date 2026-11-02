@@ -1,7 +1,11 @@
 package com.example.model
 
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "history")
 data class CalculationHistoryItem(
-    val id: String = java.util.UUID.randomUUID().toString(),
+    @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val modeName: String,
     val expression: String,
     val result: String,

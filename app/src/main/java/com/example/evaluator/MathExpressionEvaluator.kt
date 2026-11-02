@@ -2,19 +2,27 @@ package com.example.evaluator
 
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.util.Locale
 
 object MathExpressionEvaluator {
 
     class EvaluationException(message: String) : Exception(message)
+
+    // Recursion guard: the recursive-descent parser recurses once per nested
+    // parentheses/function level. Cap nesting so a user cannot trigger a
+    // StackOverflowError (an Error, which is NOT caught by catch blocks below)
+    // by mashing the "(" button.
+    private const val MAX_PAREN_NESTING = 150
 
     fun evaluate(expression: String, isDegreeMode: Boolean = true, decimalPrecision: Int = 8): String {
         if (expression.isBlank()) return ""
         try {
             val sanitized = sanitize(expression)
             if (sanitized.isEmpty()) return ""
+            guardNesting(sanitized)
             val result = Parser(sanitized, isDegreeMode).parse()
             if (result.isNaN()) throw EvaluationException("Undefined")
-            if (result.isInfinite()) throw EvaluationException("Cannot divide by zero")
+            if (result.isInfinite()) throw EvaluationException("Result too large")
 
             return formatResult(result, decimalPrecision)
         } catch (e: EvaluationException) {
@@ -29,7 +37,9 @@ object MathExpressionEvaluator {
         return try {
             val sanitized = sanitize(expression)
             if (sanitized.isEmpty()) return null
-            
+
+            guardNesting(sanitized)
+
             // Auto-close open parentheses for preview calculation
             var balanced = sanitized
             val openParens = balanced.count { it == '(' }
@@ -57,15 +67,26 @@ object MathExpressionEvaluator {
             .trim()
     }
 
-    private fun formatResult(value: Double, precision: Int): String {
-        // Handle whole numbers cleanly
-        if (value % 1.0 == 0.0 && Math.abs(value) < 1e12) {
-            return String.format("%.0f", value)
+    private fun guardNesting(sanitized: String) {
+        if (sanitized.count { it == '(' } > MAX_PAREN_NESTING) {
+            throw EvaluationException("Expression too complex")
         }
-        
+    }
+
+    private fun formatResult(value: Double, precision: Int): String {
+        // Handle whole numbers cleanly (Locale.US so the decimal point is
+        // always '.' internally; the UI formats for the user's locale)
+        if (value % 1.0 == 0.0 && Math.abs(value) < 1e12) {
+            return String.format(Locale.US, "%.0f", value)
+        }
+
         // Handle scientific notation for extremely large/small values
         if (Math.abs(value) >= 1e12 || (Math.abs(value) < 1e-6 && value != 0.0)) {
-            return String.format("%.6e", value).replace("e+", "E").replace("e-", "E-")
+            return String.format(
+                Locale.US,
+                "%.6e",
+                value
+            ).replace("e+", "E").replace("e-", "E-")
         }
 
         val bd = BigDecimal(value.toString()).setScale(precision, RoundingMode.HALF_UP).stripTrailingZeros()

@@ -1,7 +1,10 @@
 package com.example.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.HistoryDatabase
 import com.example.evaluator.MathExpressionEvaluator
 import com.example.model.CalcMode
 import com.example.model.CalculationHistoryItem
@@ -11,10 +14,13 @@ import com.example.model.UnitItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.util.Locale
 import kotlin.math.pow
 
 enum class ThemeStyle(val displayName: String) {
@@ -81,12 +87,22 @@ data class CalculatorUiState(
     val hapticEnabled: Boolean = true
 )
 
-class CalculatorViewModel : ViewModel() {
+class CalculatorViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(CalculatorUiState())
+    private val prefs = application.getSharedPreferences("calcquick_prefs", Context.MODE_PRIVATE)
+
+    private val _uiState = MutableStateFlow(CalculatorUiState(
+        themeStyle = restoreTheme(),
+        soundEnabled = prefs.getBoolean(PREF_SOUND, true),
+        hapticEnabled = prefs.getBoolean(PREF_HAPTIC, true),
+        isDegreeMode = prefs.getBoolean(PREF_DEGREE_MODE, true),
+        memoryValue = Double.fromBits(prefs.getLong(PREF_MEMORY_BITS, 0L)),
+        hasMemory = prefs.getBoolean(PREF_HAS_MEMORY, false)
+    ))
     val uiState: StateFlow<CalculatorUiState> = _uiState.asStateFlow()
 
     init {
+        observeHistory()
         updateLivePreview()
         recalculateConverter()
         recalculateLoan()
@@ -95,20 +111,42 @@ class CalculatorViewModel : ViewModel() {
         recalculateBmi()
     }
 
+    /**
+     * Calculation history is the source of truth in Room; the UI state just
+     * mirrors it. Settings/theme/memory live in SharedPreferences so they
+     * survive process death.
+     */
+    private fun observeHistory() {
+        HistoryDatabase.get(getApplication<Application>())
+            .historyDao()
+            .observeAll()
+            .onEach { items -> _uiState.update { it.copy(history = items) } }
+            .launchIn(viewModelScope)
+    }
+
+    private fun restoreTheme(): ThemeStyle =
+        ThemeStyle.entries.firstOrNull { it.name == prefs.getString(PREF_THEME, null) }
+            ?: ThemeStyle.NEON_CYBER
+
     fun setMode(mode: CalcMode) {
         _uiState.update { it.copy(activeMode = mode, errorMessage = null) }
     }
 
     fun setThemeStyle(theme: ThemeStyle) {
+        prefs.edit().putString(PREF_THEME, theme.name).apply()
         _uiState.update { it.copy(themeStyle = theme) }
     }
 
     fun toggleSound() {
-        _uiState.update { it.copy(soundEnabled = !it.soundEnabled) }
+        val newValue = !_uiState.value.soundEnabled
+        prefs.edit().putBoolean(PREF_SOUND, newValue).apply()
+        _uiState.update { it.copy(soundEnabled = newValue) }
     }
 
     fun toggleHaptic() {
-        _uiState.update { it.copy(hapticEnabled = !it.hapticEnabled) }
+        val newValue = !_uiState.value.hapticEnabled
+        prefs.edit().putBoolean(PREF_HAPTIC, newValue).apply()
+        _uiState.update { it.copy(hapticEnabled = newValue) }
     }
 
     // --- Calculator Engine Actions ---
@@ -160,7 +198,9 @@ class CalculatorViewModel : ViewModel() {
     }
 
     fun toggleDegreeRadian() {
-        _uiState.update { it.copy(isDegreeMode = !it.isDegreeMode) }
+        val newValue = !_uiState.value.isDegreeMode
+        prefs.edit().putBoolean(PREF_DEGREE_MODE, newValue).apply()
+        _uiState.update { it.copy(isDegreeMode = newValue) }
         updateLivePreview()
     }
 
@@ -190,20 +230,22 @@ class CalculatorViewModel : ViewModel() {
                 decimalPrecision = currentState.decimalPrecision
             )
 
-            // Save to history
+            // Save to history (persisted in Room; ViewModel cleanup is free)
             val newHistoryItem = CalculationHistoryItem(
                 modeName = currentState.activeMode.title,
                 expression = expr,
                 result = result
             )
+            viewModelScope.launch {
+                HistoryDatabase.get(getApplication()).historyDao().insert(newHistoryItem)
+            }
 
             _uiState.update { state ->
                 state.copy(
                     expression = result,
                     cursorPosition = result.length,
                     livePreview = null,
-                    errorMessage = null,
-                    history = listOf(newHistoryItem) + state.history
+                    errorMessage = null
                 )
             }
         } catch (e: Exception) {
@@ -224,12 +266,15 @@ class CalculatorViewModel : ViewModel() {
     // --- Memory Functions ---
 
     fun memoryClear() {
+        prefs.edit().putLong(PREF_MEMORY_BITS, 0L).putBoolean(PREF_HAS_MEMORY, false).apply()
         _uiState.update { it.copy(memoryValue = 0.0, hasMemory = false) }
     }
 
     fun memoryRecall() {
         val mem = _uiState.value.memoryValue
-        val formattedMem = if (mem % 1.0 == 0.0) String.format("%.0f", mem) else mem.toString()
+        // Locale.US: this string feeds the expression parser; the parser
+        // (and Double parser) always expects '.' as the decimal separator.
+        val formattedMem = if (mem % 1.0 == 0.0) String.format(Locale.US, "%.0f", mem) else mem.toString()
         onKeyInput(formattedMem)
     }
 
@@ -239,6 +284,7 @@ class CalculatorViewModel : ViewModel() {
             ?: currentState.expression.toDoubleOrNull()
             ?: return
         val newMem = currentState.memoryValue + valueToAdd
+        prefs.edit().putLong(PREF_MEMORY_BITS, newMem.toRawBits()).putBoolean(PREF_HAS_MEMORY, true).apply()
         _uiState.update { it.copy(memoryValue = newMem, hasMemory = true) }
     }
 
@@ -248,6 +294,7 @@ class CalculatorViewModel : ViewModel() {
             ?: currentState.expression.toDoubleOrNull()
             ?: return
         val newMem = currentState.memoryValue - valueToSub
+        prefs.edit().putLong(PREF_MEMORY_BITS, newMem.toRawBits()).putBoolean(PREF_HAS_MEMORY, true).apply()
         _uiState.update { it.copy(memoryValue = newMem, hasMemory = true) }
     }
 
@@ -293,7 +340,7 @@ class CalculatorViewModel : ViewModel() {
         val res = UnitConverterData.convert(valDouble, state.converterCategory, state.fromUnit, state.toUnit)
         
         val formattedRes = if (res % 1.0 == 0.0 && Math.abs(res) < 1e9) {
-            String.format("%.0f", res)
+            String.format(Locale.US, "%.0f", res)
         } else {
             BigDecimal(res).setScale(state.decimalPrecision, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
         }
@@ -332,18 +379,32 @@ class CalculatorViewModel : ViewModel() {
         }
 
         val monthlyRate = annualRate / 100.0 / 12.0
-        val totalMonths = (years * 12).toInt()
-        val monthlyPayment = (p * monthlyRate * (1 + monthlyRate).pow(totalMonths)) /
-                ((1 + monthlyRate).pow(totalMonths) - 1)
+        // Round (not truncate) so fractional years behave reasonably, and
+        // guard against 0 months, which previously produced (1+r)^0 - 1 = 0
+        // and an Infinity monthly payment.
+        val totalMonths = Math.round(years * 12.0)
+        if (totalMonths < 1L) {
+            _uiState.update {
+                it.copy(
+                    loanMonthlyPayment = "0.00",
+                    loanTotalPayment = "0.00",
+                    loanTotalInterest = "0.00"
+                )
+            }
+            return
+        }
+
+        val monthlyPayment = (p * monthlyRate * (1 + monthlyRate).pow(totalMonths.toInt())) /
+                ((1 + monthlyRate).pow(totalMonths.toInt()) - 1)
 
         val totalPayment = monthlyPayment * totalMonths
         val totalInterest = totalPayment - p
 
         _uiState.update {
             it.copy(
-                loanMonthlyPayment = String.format("%,.2f", monthlyPayment),
-                loanTotalPayment = String.format("%,.2f", totalPayment),
-                loanTotalInterest = String.format("%,.2f", totalInterest)
+                loanMonthlyPayment = String.format(Locale.US, "%,.2f", monthlyPayment),
+                loanTotalPayment = String.format(Locale.US, "%,.2f", totalPayment),
+                loanTotalInterest = String.format(Locale.US, "%,.2f", totalInterest)
             )
         }
     }
@@ -373,9 +434,9 @@ class CalculatorViewModel : ViewModel() {
 
         _uiState.update {
             it.copy(
-                tipAmount = String.format("%.2f", tipAmt),
-                tipTotalAmount = String.format("%.2f", total),
-                tipPerPersonAmount = String.format("%.2f", perPerson)
+                tipAmount = String.format(Locale.US, "%.2f", tipAmt),
+                tipTotalAmount = String.format(Locale.US, "%.2f", total),
+                tipPerPersonAmount = String.format(Locale.US, "%.2f", perPerson)
             )
         }
     }
@@ -406,8 +467,8 @@ class CalculatorViewModel : ViewModel() {
 
         _uiState.update {
             it.copy(
-                discountFinalPrice = String.format("%.2f", finalPrice),
-                discountSavedAmount = String.format("%.2f", saved)
+                discountFinalPrice = String.format(Locale.US, "%.2f", finalPrice),
+                discountSavedAmount = String.format(Locale.US, "%.2f", saved)
             )
         }
     }
@@ -469,15 +530,24 @@ class CalculatorViewModel : ViewModel() {
     }
 
     fun toggleFavoriteHistory(itemId: String) {
-        _uiState.update { state ->
-            val updated = state.history.map {
-                if (it.id == itemId) it.copy(isFavorite = !it.isFavorite) else it
-            }
-            state.copy(history = updated)
+        viewModelScope.launch {
+            HistoryDatabase.get(getApplication()).historyDao().toggleFavorite(itemId)
         }
     }
 
     fun clearHistory() {
         _uiState.update { it.copy(history = emptyList()) }
+        viewModelScope.launch {
+            HistoryDatabase.get(getApplication()).historyDao().clearAll()
+        }
+    }
+
+    private companion object {
+        const val PREF_THEME = "theme_style"
+        const val PREF_SOUND = "sound_enabled"
+        const val PREF_HAPTIC = "haptic_enabled"
+        const val PREF_DEGREE_MODE = "degree_mode"
+        const val PREF_MEMORY_BITS = "memory_value_bits"
+        const val PREF_HAS_MEMORY = "has_memory"
     }
 }
