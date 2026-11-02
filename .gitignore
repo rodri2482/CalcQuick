@@ -16,3 +16,10 @@
 local.properties
 .env
 debug.keystore
+
+# Secrets: never commit signing material or env files
+my-upload-key.jks
+*.jks
+keystore.properties
+*.keystore
+!**/debug.keystore

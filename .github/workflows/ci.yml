@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The repo does not commit the Gradle wrapper JAR, so install a known
+      # good Gradle version directly (matches gradle-wrapper.properties).
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      # The debug signing config expects a debug.keystore at the repo root
+      # (gitignored). Generate it on CI so the debug build can be signed.
+      - name: Generate debug keystore if missing
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storetype PKCS12 \
+              -alias androiddebugkey -keypass android -storepass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      # Downloadable installable APK on every run (Actions tab → artifacts)
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CalcQuick-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Run unit tests (Robolectric)
+        run: gradle --no-daemon :app:testDebugUnitTest
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: app/build/test-results/**/*.xml
+          if-no-files-found: ignore
